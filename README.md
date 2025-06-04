@@ -12,17 +12,19 @@ This document provides a complete overview of the `research-llm` pipeline, inclu
 
 ## 📊 Project Structure (Visual Overview)
 
-**Text-Based Flow**:
+```mermaid
+graph TD
+    A[CSV files + PDF URLs] --> B[pdfs.py → download_pdfs/]
+    B --> C[ingest_pdf_fulltext.py → works table]
+    B --> D[ingest_pdf_metadata() + csv_handler.py → research_info table]
+    D --> E[clean_db.py → normalize names/titles]
+    C --> F[summarize_works.py → T5 model → summaries in works]
+    D --> G[llama_data_formatter.py → QA pairs]
+    G --> H[fine_tune_llama_rag.py → fine-tuned LLaMA (QLoRA)]
+    E --> I[migrate_to_chromadb.py → ChromaDB: paper_metadata]
+    F --> J[migrate_to_chromadb.py → ChromaDB: paper_summaries]
+```
 
-- CSV files + PDF URLs → `pdfs.py` → `download_pdfs/`
-- `pdfs.py` → `ingest_pdf_fulltext.py` → `works` table
-- `pdfs.py` → `ingest_pdf_metadata()` + `csv_handler.py` → `research_info` table
-- `research_info` table → `clean_db.py` → cleaned/normalized entries
-- `works` table → `summarize_works.py` → T5 model → summaries in `works`
-- `research_info` table → `llama_data_formatter.py` → QA pairs
-- QA pairs → `fine_tune_llama_rag.py` → fine-tuned LLaMA (QLoRA)
-- Cleaned metadata → `migrate_to_chromadb.py` → ChromaDB: `paper_metadata`
-- Summaries → `migrate_to_chromadb.py` → ChromaDB: `paper_summaries`
 ---
 
 ## 🔍 File-by-File, Function-by-Function Breakdown

@@ -1,260 +1,196 @@
-# Pipeline Overview
+🧠 research-llm: Complete README
 
-This project implements a full RAG‑style research assistant:
+This document provides a complete overview of the research-llm pipeline, including the purpose of the project, its structure, and an in-depth explanation of every file and function.
 
-1. **`train_pipeline.py`** — end‑to‑end training:  
-   - PDF ingestion  
-   - SQLite staging  
-   - T5 summarization & fine‑tuning  
-   - “Lite” dataset creation  
-   - LLaMA fine‑tuning  
+📖 What is research-llm?
 
-2. **`rag_pipeline.py`** — interactive RAG chatbot:  
-   - ChromaDB vector store  
-   - LangChain RetrieverQA  
-   - Fine‑tuned LLaMA generation  
+research-llm is a comprehensive Retrieval-Augmented Generation (RAG) pipeline developed to convert research papers affiliated with Syracuse University into a searchable knowledge base. It uses NLP techniques (summarization, QLoRA fine-tuning) and vector databases (ChromaDB) to enable a chatbot to answer user queries based on institutional research.
 
-3. **`test_rag.py`** — automated test suite for your RAG chatbot.
+📊 Project Structure (Visual Overview)
 
-All scripts assume your code lives under `C:\codes\…`.
+graph TD
+    A[CSV files + PDF URLs] --> B[pdfs.py → download_pdfs/]
+    B --> C[ingest_pdf_fulltext.py → works table]
+    B --> D[ingest_pdf_metadata() + csv_handler.py → research_info table]
+    D --> E[clean_db.py → normalize names/titles]
+    C --> F[summarize_works.py → T5 model → summaries in works]
+    D --> G[llama_data_formatter.py → QA pairs]
+    G --> H[fine_tune_llama_rag.py → fine-tuned LLaMA (QLoRA)]
+    E --> I[migrate_to_chromadb.py → ChromaDB: paper_metadata]
+    F --> J[migrate_to_chromadb.py → ChromaDB: paper_summaries]
 
----
+🔍 File-by-File, Function-by-Function Breakdown
 
-## Folder Structure
-pipeline_project/ 
-├── train_pipeline.py
+run_pipeline.py
 
-├── rag_pipeline.py
+Purpose: Orchestrates the end-to-end pipeline.
 
-├── test_rag.py
+main(): Executes every stage in order, handling exceptions and cleanup.
 
-├── migrate_sqlite_to_chromadb.py
+ingest_pdf_metadata(): Inserts extracted metadata from PDFs into the research_info table.
 
-├── pdfs.py
+pdfs.py
 
-├── pdf_pre.py
+Purpose: Downloads research papers from pdf_url in CSV files.
 
-├── model.py
+main(): Iterates through rows, fetches and saves PDFs using requests, handles errors.
 
-├── llama_model.py
+ingest_pdf_fulltext.py
 
-├── database_handler.py
+Purpose: Reads PDF content and stores it into the works table.
 
-├── data_pre.py
+main(): Processes all files in download_pdfs, skips corrupt/duplicate files.
 
-└── (optional helper scripts)
+work_exists(file_name, conn): Checks for duplicate entries.
 
+csv_handler.py
 
-- **`train_pipeline.py`**  
-  Orchestrates data ingestion, summarization, and model fine‑tuning in one shot.
+Purpose: Reads multiple CSVs and loads metadata into research_info.
 
-- **`rag_pipeline.py`**  
-  Loads ChromaDB + LangChain + LLaMA to serve an interactive chatbot.
+combine_csvs(): Normalizes column names and merges multiple CSVs.
 
-- **`test_rag.py`**  
-  Runs a list of test questions through your RAG chain and logs outputs.
+populate_research_info_from_csv(): Inserts the cleaned metadata into the database.
 
-- **`migrate_sqlite_to_chromadb.py`**  
-  One‑time migration of all SQLite data into ChromaDB.
+clean_db.py
 
-- **`pdfs.py`** / **`pdf_pre.py`**  
-  Download, extract, and clean PDF text.
+Purpose: Cleans junk data in research_info using parsed full text.
 
-- **`model.py`**  
-  T5 summarization & fine‑tuning utilities.
+clean(txt): Strips non-ASCII and whitespace.
 
-- **`llama_model.py`**  
-  LLaMA fine‑tuning utilities.
+looks_dummy_title() / looks_dummy_name(): Identifies poor quality data.
 
-- **`database_handler.py`**  
-  SQLite schema & CRUD helpers.
+parse_from_fulltext(txt): Extracts structured fields (title, DOI, date).
 
-- **`data_pre.py`**  
-  Text‑to‑T5 preprocessing helper.
+main(): Iterates through rows, applies fixes, and updates the database.
 
----
+database_handler.py
 
-# Detailed File and Function Documentation
+Purpose: Helper functions for SQLite access.
 
-## 1. train_pipeline.py
+insert_work(file_name, full_text): Adds a row to works.
 
-### Purpose  
-Runs the full data → model training loop:
+fetch_unsummarized_works(limit): Selects works needing summaries.
 
-1. **Download PDFs** (from your merged CSV)  
-2. **Extract & ingest** into SQLite  
-3. **Summarize** with T5 and update DB  
-4. **Fine‑tune T5** on `(full_text → summary)`  
-5. **Create lite DB/pickle/CSV**  
-6. **Fine‑tune LLaMA** on `(input_text → target_text)`
+update_summary(work_id, summary): Updates summary and status.
 
-### Key Functions  
-- **`download_pdfs()`**  
-- **`process_pdfs_into_sqlite()`**  
-- **`generate_summaries_and_finetune_t5()`**  
-- **`create_lite_and_finetune_llama()`**
+close_connection(): Safe placeholder.
 
-Each step is checkpoint‑aware and resumes from the latest checkpoint.
+pdf_pre.py
 
----
+Purpose: Extracts raw text and metadata from a PDF.
 
-## 2. rag_pipeline.py
+extract_raw_text_from_pdf(): Reads all pages via PyPDF2.
 
-### Purpose  
-Serves an interactive Retrieval‑Augmented Generation chatbot:
+clean_text(): Cleans up formatting.
 
-1. Loads ChromaDB (persisted vector store)  
-2. Uses Sentence‑Transformers embeddings  
-3. Instantiates a LangChain `RetrievalQA` chain  
-4. Wraps your fine‑tuned LLaMA in a HuggingFacePipeline  
-5. Provides a REPL chat loop
+extract_research_info_from_pdf(): Extracts title/authors/info heuristically.
 
-### Key Sections  
-- **Configuration** (paths, model names, device)  
-- **Retriever instantiation**  
-- **LLM loading & pipeline**  
-- **`RetrievalQA.from_chain_type(...)`**  
-- **`chat()`** loop
+model.py
 
----
+Purpose: Loads or fine-tunes a t5-small model for summarization.
 
-## 3. test_rag.py
+load_t5_model(): Caches model/tokenizer.
 
-### Purpose  
-Executes a predefined list of questions against your RAG pipeline and logs results:
+clear_memory(): Clears GPU memory.
 
-- **`TEST_QUESTIONS`** array  
-- **`log_entry()`** writes to CSV  
-- **`if __name__ == "__main__":`** iterates, runs `qa.run(...)`, logs
+summarize_text(text): Summarizes a paper.
 
----
+fine_tune_t5_on_papers(df, output_dir): Fine-tunes T5 and saves artifacts.
 
-## 4. migrate_sqlite_to_chromadb.py
+summarize_works.py
 
-### Purpose  
-One‑time migration of your SQLite tables into ChromaDB:
+Purpose: Applies T5 to all unsummarized entries.
 
-- Fetches `works` and `research_info`  
-- Chunks long texts with `RecursiveCharacterTextSplitter`  
-- Embeds with Sentence‑Transformers (`all-MiniLM-L6-v2`)  
-- Adds documents to Chroma collection and persists
+main(limit): Loops through all works entries and updates summary field.
 
----
+llama_data_formatter.py
 
-## 5. pdfs.py & pdf_pre.py
+Purpose: Builds question-answer pairs from metadata.
 
-- **`pdfs.py`**: Downloads PDFs from a CSV.  
-- **`pdf_pre.py`**:  
-  - `extract_text_from_pdf(file_path)`  
-  - `clean_text(text)`  
-  - `extract_research_info_from_pdf(file_path)`
+generate_qa_pairs(): Generates 4 QA entries per row; stores as pickle.
 
----
+fine_tune_llama_rag.py
 
-## 6. model.py
+Purpose: Fine-tunes 4-bit LLaMA using LoRA on QA pairs.
 
-### Purpose  
-T5 summarization & fine‑tuning helpers:
+load_llama_model(): Loads quantized model + tokenizer.
 
-- `summarize_text(text, idx=None, total=None)`  
-- `fine_tune_t5_on_papers(dataset, output_dir)`
+fine_tune_llama_on_papers(df): Prepares dataset, masks prompts, trains and saves model.
 
-Supports resuming from the latest checkpoint.
+migrate_to_chromadb.py
 
----
+Purpose: Inserts all summaries + metadata into ChromaDB collections.
 
-## 7. llama_model.py
+_safe(x): Cleans null values.
 
-### Purpose  
-LLaMA fine‑tuning helpers:
+migrate_metadata(): Converts research_info into Chroma documents.
 
-- `fine_tune_llama_on_papers(dataset, output_dir)`  
-  - Masks prompt tokens, computes loss only on summary tokens  
-  - Resumes from checkpoint
+migrate_summaries(): Converts works.summary into Chroma documents.
 
-- `clear_memory()`
+✅ Summary
 
----
+This project represents a robust AI-powered research assistant pipeline that combines:
 
-## 8. database_handler.py
+PDF ingestion
 
-CRUD operations for SQLite:
+NLP summarization
 
-- `setup_database()`, `setup_research_info_table()`  
-- `insert_work(...)`, `remove_duplicates()`, `fetch_unsummarized_works()`  
-- `update_summary(work_id, summary)`  
-- `insert_research_info(...)`, `fetch_research_info()`  
-- `count_entries_in_table()`, `check_missing_files_in_db(...)`
+QA generation
 
----
+Language model fine-tuning
 
-## 9. data_pre.py
+Vector database search
 
-- `preprocess_text_for_t5(text, model_name="t5-small")`
+It enables fast, contextual querying of Syracuse University research output using modern LLMs.
 
----
+⚙️ Requirements
 
-# Dependency Diagram
+Install the required dependencies:
 
+pip install -r requirements.txt
 
-- **`train_pipeline.py`**  
-  Orchestrates data ingestion, summarization, and model fine‑tuning in one shot.
+Key libraries used:
 
-- **`rag_pipeline.py`**  
-  Loads ChromaDB + LangChain + LLaMA to serve an interactive chatbot.
+torch
 
-- **`test_rag.py`**  
-  Runs a list of test questions through your RAG chain and logs outputs.
+transformers
 
-- **`migrate_sqlite_to_chromadb.py`**  
-  One‑time migration of all SQLite data into ChromaDB.
+datasets
 
-- **`pdfs.py`** / **`pdf_pre.py`**  
-  Download, extract, and clean PDF text.
+peft
 
-- **`model.py`**  
-  T5 summarization & fine‑tuning utilities.
+bitsandbytes
 
-- **`llama_model.py`**  
-  LLaMA fine‑tuning utilities.
+chromadb
 
-- **`database_handler.py`**  
-  SQLite schema & CRUD helpers.
+pandas, numpy, sqlite3, requests, PyPDF2, tqdm
 
-- **`data_pre.py`**  
-  Text‑to‑T5 preprocessing helper.
+Ensure CUDA-enabled GPU is available for model training/inference.
 
----
+▶️ How to Run
 
-# Dependency & Pipeline Flowchart
+Prepare your environment:
 
-```mermaid
-flowchart LR
-    subgraph Training Pipeline
-      A[train_pipeline.py]
-    end
+Place all source CSV files in ~/Downloads/Application/
 
-    subgraph RAG Service
-      B[rag_pipeline.py]
-      C[test_rag.py]
-    end
+Ensure T5 and LLaMA models are accessible locally
 
-    subgraph Helpers
-      D[migrate_sqlite_to_chromadb.py]
-      E[pdfs.py] & F[pdf_pre.py]
-      G[model.py] & H[llama_model.py]
-      I[database_handler.py] & J[data_pre.py]
-    end
+Run the full pipeline:
 
-    A --> I
-    A --> E
-    A --> F
-    A --> G
-    A --> H
+python run_pipeline.py
 
-    B --> D
-    B --> G
-    B --> H
+This will:
 
-    C --> B
+Download PDFs
 
+Extract full-text
+
+Populate metadata tables
+
+Summarize with T5
+
+Generate QA data
+
+Fine-tune LLaMA using QLoRA
+
+Populate ChromaDB

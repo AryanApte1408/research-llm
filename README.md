@@ -14,16 +14,26 @@ This document provides a complete overview of the `research-llm` pipeline, inclu
 ## 📊 Project Structure (Visual Overview)
 
 ```mermaid
-graph TD
-    A[CSV files + PDF URLs] --> B[pdfs.py → download_pdfs/]
-    B --> C[ingest_pdf_fulltext.py → works table]
-    B --> D[ingest_pdf_metadata.py + csv_handler.py → research_info table]
-    D --> E[clean_db.py → normalize names/titles]
-    C --> F[summarize_works.py → T5 model → summaries in works]
-    D --> G[llama_data_formatter.py → QA pairs]
-    G --> H[fine_tune_llama_rag.py → fine-tuned LLaMA (QLoRA)]
-    E --> I[migrate_to_chromadb.py → ChromaDB: paper_metadata]
-    F --> J[migrate_to_chromadb.py → ChromaDB: paper_summaries]
+graph  TD
+
+A["CSV  files  and  PDF  URLs"] --> B["pdfs.py: download_pdfs"]
+
+B  --> C["ingest_pdf_fulltext.py: creates  works  table"]
+
+B  --> D["ingest_pdf_metadata.py  and  csv_handler.py: creates  research_info  table"]
+
+D  --> E["clean_db.py: normalize  names  and  titles"]
+
+C  --> F["summarize_works.py: T5  model  generates  summaries"]
+
+D  --> G["llama_data_formatter.py: generate  QA  pairs"]
+
+G  --> H["fine_tune_llama_rag.py: fine-tune  LLaMA  (QLoRA)"]
+
+E  --> I["migrate_to_chromadb.py: inserts  paper_metadata"]
+
+F  --> J["migrate_to_chromadb.py: inserts  paper_summaries"]
+
 
 ```
 

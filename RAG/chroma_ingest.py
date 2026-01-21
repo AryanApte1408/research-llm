@@ -1,9 +1,9 @@
-# chroma_ingest.py
 import os
 import sqlite3
 import time
 import re
-from typing import Any, Dict, List, Optional, Tuple
+import argparse
+from typing import Any, Dict, List, Tuple
 
 from tqdm import tqdm
 import chromadb
@@ -11,11 +11,13 @@ from chromadb.utils import embedding_functions
 
 import config_full as config
 
-
 DB_PATH = config.SQLITE_DB_FULL
 CHROMA_DIR = config.CHROMA_DIR_FULL
+
 COLLECTION_NAME = getattr(config, "CHROMA_COLLECTION_FULL", "papers_all")
-EMBED_MODEL = getattr(config, "EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+EMBED_MODEL = getattr(config, "SENTENCE_TFORMER", None) or getattr(
+    config, "EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
+)
 
 PAPERS_PER_BATCH = int(getattr(config, "PAPERS_PER_BATCH", 200))
 CHROMA_MAX_BATCH = int(getattr(config, "CHROMA_MAX_BATCH", 5400))
@@ -45,6 +47,7 @@ def _split_text(text: str, max_chars: int = 12000) -> List[str]:
     t = text.strip()
     if len(t) <= max_chars:
         return [t]
+
     parts: List[str] = []
     i = 0
     n = len(t)
@@ -53,17 +56,6 @@ def _split_text(text: str, max_chars: int = 12000) -> List[str]:
         parts.append(t[i:j])
         i = j
     return parts
-
-
-def _join_nonempty(*parts: Any, sep: str = "\n") -> str:
-    out = []
-    for p in parts:
-        if p is None:
-            continue
-        s = str(p).strip()
-        if s:
-            out.append(s)
-    return sep.join(out)
 
 
 def detect_works_fulltext_column(conn: sqlite3.Connection) -> str:
@@ -79,7 +71,23 @@ def detect_works_fulltext_column(conn: sqlite3.Connection) -> str:
     raise RuntimeError("Could not find works fulltext column. Expected one of: full_text, fultext, fulltext")
 
 
-def fetch_rows(conn: sqlite3.Connection, works_fulltext_col: str) -> List[Tuple[Any, ...]]:
+def build_paper_text(title: Any, summary: Any, fulltext: Any) -> str:
+    t = (title or "").strip()
+    s = (summary or "").strip()
+    f = (fulltext or "").strip()
+
+    parts: List[str] = []
+    if t:
+        parts.append(t)
+    if s:
+        parts.append(s)
+    if f:
+        parts.append(f)
+
+    return "\n\n".join(parts).strip()
+
+
+def iter_rows(conn: sqlite3.Connection, works_fulltext_col: str, fetch_size: int = 8000):
     cur = conn.cursor()
     sql = f"""
         SELECT
@@ -99,95 +107,81 @@ def fetch_rows(conn: sqlite3.Connection, works_fulltext_col: str) -> List[Tuple[
           ON r.paper_id = w.paper_id
     """
     cur.execute(sql)
-    return cur.fetchall()
-
-
-def build_paper_document(row: Tuple[Any, ...], works_fulltext_colname: str) -> Optional[Tuple[str, str, Dict[str, Any]]]:
-    (
-        paper_id,
-        r_id,
-        researcher_name,
-        work_title,
-        authors,
-        info,
-        doi,
-        publication_date,
-        primary_topic,
-        summary,
-        fulltext,
-    ) = row
-
-    title = (work_title or "").strip()
-    summ = (summary or "").strip()
-    ft = (fulltext or "").strip()
-
-    if not (title or summ or ft):
-        return None
-
-    paper_id_s = str(paper_id).strip() if paper_id is not None else ""
-    if not paper_id_s:
-        return None
-
-    doc = _join_nonempty(
-        f"Paper ID: {safe_meta(paper_id_s, 'Unknown')}",
-        f"Researcher: {safe_meta(researcher_name, 'Unknown')}",
-        f"Title: {safe_meta(title, 'Untitled')}",
-        f"Authors: {safe_meta(authors)}",
-        f"Primary Topic: {safe_meta(primary_topic)}",
-        f"Info: {safe_meta(info)}",
-        f"DOI: {safe_meta(doi)}",
-        f"Publication Date: {safe_meta(publication_date)}",
-        "",
-        f"Summary:\n{safe_meta(summ)}",
-        "",
-        f"Fulltext ({works_fulltext_colname}):\n{safe_meta(ft)}",
-        sep="\n",
-    ).strip()
-
-    meta = {
-        "paper_id": safe_meta(paper_id_s),
-        "research_info_id": safe_meta(r_id),
-        "researcher": safe_meta(researcher_name, "Unknown"),
-        "title": safe_meta(title, "Untitled"),
-        "authors": safe_meta(authors),
-        "doi": safe_meta(doi),
-        "year": _pick_year(publication_date),
-        "publication_date": safe_meta(publication_date),
-        "primary_topic": safe_meta(primary_topic),
-    }
-
-    return paper_id_s, doc, meta
+    while True:
+        rows = cur.fetchmany(fetch_size)
+        if not rows:
+            break
+        for row in rows:
+            yield row
 
 
 def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--rebuild", action="store_true", help="Delete and rebuild collection")
+    args = ap.parse_args()
+
     os.makedirs(CHROMA_DIR, exist_ok=True)
     client = chromadb.PersistentClient(path=CHROMA_DIR)
-
     embedder = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=EMBED_MODEL)
 
-    try:
-        client.delete_collection(COLLECTION_NAME)
-    except Exception:
-        pass
+    if args.rebuild:
+        try:
+            client.delete_collection(COLLECTION_NAME)
+            print(f"Old collection removed: {COLLECTION_NAME}")
+        except Exception:
+            pass
 
     col = client.get_or_create_collection(name=COLLECTION_NAME, embedding_function=embedder)
 
     conn = sqlite3.connect(DB_PATH)
     works_fulltext_col = detect_works_fulltext_column(conn)
-    rows = fetch_rows(conn, works_fulltext_col)
+
+    by_paper: Dict[str, Tuple[str, Dict[str, Any]]] = {}
+
+    for row in iter_rows(conn, works_fulltext_col, fetch_size=8000):
+        (
+            paper_id,
+            r_id,
+            researcher_name,
+            work_title,
+            authors,
+            info,
+            doi,
+            publication_date,
+            primary_topic,
+            summary,
+            fulltext,
+        ) = row
+
+        pid = str(paper_id).strip() if paper_id is not None else ""
+        if not pid:
+            continue
+
+        doc_text = build_paper_text(work_title, summary, fulltext)
+        if not doc_text:
+            continue
+
+        meta = {
+            "paper_id": safe_meta(pid),
+            "research_info_id": safe_meta(r_id),
+            "researcher": safe_meta(researcher_name, "Unknown"),
+            "title": safe_meta((work_title or "").strip(), "Untitled"),
+            "authors": safe_meta(authors),
+            "doi": safe_meta(doi),
+            "year": _pick_year(publication_date),
+            "publication_date": safe_meta(publication_date),
+            "primary_topic": safe_meta(primary_topic),
+        }
+
+        prev = by_paper.get(pid)
+        if prev is None or len(doc_text) > len(prev[0]):
+            by_paper[pid] = (doc_text, meta)
+
     conn.close()
 
-    by_paper: Dict[str, List[Tuple[Any, ...]]] = {}
-    for row in rows:
-        pid = row[0]
-        if pid is None:
-            continue
-        pid_s = str(pid).strip()
-        if not pid_s:
-            continue
-        by_paper.setdefault(pid_s, []).append(row)
-
     paper_ids = list(by_paper.keys())
+    print(f"Papers prepared: {len(paper_ids)}")
+
     total_start = time.time()
 
     for batch_idx in tqdm(range(0, len(paper_ids), PAPERS_PER_BATCH), desc="Ingesting papers", unit="batch"):
@@ -198,24 +192,7 @@ def main() -> None:
         metas: List[Dict[str, Any]] = []
 
         for pid in ids_batch:
-            candidates = by_paper.get(pid) or []
-            best = None
-            best_score = -1
-
-            for row in candidates:
-                built = build_paper_document(row, works_fulltext_col)
-                if not built:
-                    continue
-                _, doc_text, meta = built
-                score = len(doc_text)
-                if score > best_score:
-                    best_score = score
-                    best = (doc_text, meta)
-
-            if not best:
-                continue
-
-            doc_text, meta = best
+            doc_text, meta = by_paper[pid]
             chunks = _split_text(doc_text, max_chars=CHUNK_MAX_CHARS)
             if not chunks:
                 continue

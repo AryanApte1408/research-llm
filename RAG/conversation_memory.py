@@ -1,23 +1,70 @@
-# conversation_memory.py
-from typing import Dict, Any, Optional
+# database_manager.py
+import os
+from dataclasses import dataclass
+from typing import Dict, List, Optional
 
-from rag_engine import get_global_manager
+import config_full as config
 
-_QA_CACHE: Dict[str, Dict[str, Any]] = {}
 
-def clear_qa_cache(user_key: str) -> None:
-    if user_key in _QA_CACHE:
-        del _QA_CACHE[user_key]
+@dataclass
+class DatabaseConfig:
+    mode: str
+    chroma_dir: str
+    collection: str
+    description: str
 
-def get_cached_answer(user_key: str, question: str) -> Optional[Dict[str, Any]]:
-    u = _QA_CACHE.get(user_key) or {}
-    return u.get(question)
 
-def set_cached_answer(user_key: str, question: str, payload: Dict[str, Any]) -> None:
-    _QA_CACHE.setdefault(user_key, {})[question] = payload
+class DatabaseManager:
+    def __init__(self) -> None:
+        self.configs: Dict[str, DatabaseConfig] = {}
+        self.active_config_name: str = "full"
+        self._load_defaults()
 
-def hard_reset_memory(user_key: str) -> None:
-    mgr = get_global_manager()
-    eng = mgr.get_engine(user_key, mode=mgr.active_mode)
-    eng.reset_all_for_session()
-    clear_qa_cache(user_key)
+    def _load_defaults(self) -> None:
+        self.register_config(
+            "full",
+            DatabaseConfig(
+                mode="full",
+                chroma_dir=config.CHROMA_DIR_FULL,
+                collection=getattr(config, "CHROMA_COLLECTION_FULL", getattr(config, "CHROMA_COLLECTION", "papers_all")),
+                description="Full text papers with metadata",
+            ),
+        )
+        self.active_config_name = "full"
+
+    def register_config(self, name: str, cfg: DatabaseConfig) -> None:
+        self.configs[name] = cfg
+
+    def resolve_mode(self, requested_mode: str) -> str:
+        available_modes = self.list_configs()
+        if not available_modes:
+            return ""
+        req = (requested_mode or "").strip()
+        if req in self.configs:
+            return req
+        req_l = req.lower()
+        by_lower = {k.lower(): k for k in self.configs.keys()}
+        if req_l in by_lower:
+            return by_lower[req_l]
+        return available_modes[0]
+
+    def switch_config(self, name: str) -> bool:
+        target = self.resolve_mode(name)
+        if target:
+            self.active_config_name = target
+            return True
+        return False
+
+    def get_active_config(self) -> Optional[DatabaseConfig]:
+        return self.configs.get(self.active_config_name)
+
+    def get_config(self, name: str) -> Optional[DatabaseConfig]:
+        return self.configs.get(name)
+
+    def list_configs(self) -> List[str]:
+        return list(self.configs.keys())
+
+    def ensure_dirs_exist(self) -> None:
+        for cfg in self.configs.values():
+            if cfg and cfg.chroma_dir:
+                os.makedirs(cfg.chroma_dir, exist_ok=True)

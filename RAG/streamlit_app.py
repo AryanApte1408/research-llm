@@ -6,12 +6,23 @@ import streamlit as st
 
 from streamlit_agraph import agraph, Node, Edge, Config
 
-_LOCAL_EMBED_PATH = r"C:\codes\models\all-MiniLM-L6-v2"
-if os.path.isdir(_LOCAL_EMBED_PATH):
+# ---------------------------------------------------------------------------
+# Embedding model path: read from environment variables instead of hardcoding
+# platform-specific paths. Set EMBED_MODEL_PATH in your .env or shell to point
+# to a local model directory; if unset the app falls back to HuggingFace Hub
+# download behaviour.
+# ---------------------------------------------------------------------------
+_LOCAL_EMBED_PATH = os.getenv("EMBED_MODEL_PATH", "").strip()
+if _LOCAL_EMBED_PATH and os.path.isdir(_LOCAL_EMBED_PATH):
     os.environ.setdefault("EMBED_MODEL", _LOCAL_EMBED_PATH)
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-os.environ.setdefault("HF_HOME", r"C:\codes\hf_cache")
+
+os.environ.setdefault("HF_HUB_OFFLINE", os.getenv("HF_HUB_OFFLINE", "1"))
+os.environ.setdefault("TRANSFORMERS_OFFLINE", os.getenv("TRANSFORMERS_OFFLINE", "1"))
+
+_default_hf_home = os.getenv("HF_HOME") or os.path.join(
+    os.path.expanduser("~"), ".cache", "huggingface"
+)
+os.environ.setdefault("HF_HOME", _default_hf_home)
 
 from rag_pipeline import answer_question
 from runtime_settings import settings

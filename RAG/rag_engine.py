@@ -53,9 +53,26 @@ def _ensure_dir(p: str) -> None:
 
 
 def _make_local_chroma_client(persist_dir: str) -> chromadb.Client:
+    """
+    Create a PersistentClient for the given directory, creating the directory
+    if it does not already exist.
+
+    Args:
+        persist_dir: Path to the Chroma persistence directory.
+
+    Returns:
+        A chromadb.PersistentClient bound to persist_dir.
+
+    Raises:
+        chromadb exceptions if the client cannot be initialised (e.g. corrupt
+        database or incompatible settings from a previous client instance).
+
+    Note:
+        PersistentClient is used consistently across the app to avoid
+        "already exists with different settings" collisions that occur when
+        mixing EphemeralClient and PersistentClient against the same directory.
+    """
     _ensure_dir(persist_dir)
-    # Use PersistentClient consistently across the app to avoid
-    # "already exists with different settings" collisions.
     return chromadb.PersistentClient(path=persist_dir)
 
 
@@ -343,7 +360,7 @@ def build_rolling_summary(
         existing = [v for v in sections.get("Core entities", []) if v and v.strip() and v.strip() != "(none)"]
         combined = _dedupe_ci(existing + meta_entities)
         max_items = max(1, int(getattr(settings, "summary_max_items_per_field", 6)))
-        # Prune oldest entities first.
+        # Keep most recent entities (drop oldest if over the limit).
         sections["Core entities"] = combined[-max_items:]
 
     if a:
@@ -751,7 +768,8 @@ def _has_explicit_entity_signal(question: str, ents: Optional[Dict[str, List[str
     data = ents if ents is not None else _extract_entities_basic(q, max_items=4)
     if data.get("people") or data.get("orgs") or data.get("entities"):
         return True
-    # Topic-only extraction can be noisy; require non-generic terms.
+    # Topic-only extraction can be noisy; require a minimum number of
+    # non-generic terms before treating the query as having an entity signal.
     topic_tokens = [t for t in data.get("topics", []) if not _is_generic_query_token(t)]
     min_terms = int(getattr(settings, "retrieval_topic_min_terms", 2))
     return len(topic_tokens) >= max(1, min_terms)
@@ -1033,7 +1051,8 @@ class _DirectGenerationLLM:
             if top_p is not None:
                 gen_kwargs["top_p"] = float(top_p)
 
-        # Use autocast on GPU for throughput while preserving deterministic output.
+        # Use autocast on GPU for throughput; note that determinism depends
+        # on the CUDA version and hardware architecture.
         ctx = torch.autocast("cuda", dtype=torch.float16) if torch.cuda.is_available() else nullcontext()
         with torch.no_grad():
             with ctx:
@@ -1831,7 +1850,6 @@ class Engine:
                         return got
                 except Exception:
                     continue
-            # Some wrappers expose a positional embedding arg.
             try:
                 got = method(query_embedding, k=k, filter=where_filter) if where_filter else method(query_embedding, k=k)
                 if isinstance(got, list):
@@ -2006,7 +2024,6 @@ class Engine:
         if not docs:
             return docs
 
-        # Deduplicate by paper_id/chunk first.
         unique = self._merge_unique_docs(docs, [])
         q_tokens = [t for t in _tokenize_words(query) if not _is_generic_query_token(t)]
         if not q_tokens:
@@ -2179,7 +2196,8 @@ class Engine:
                 pass
         user_turns = self._user_turn_count()
         allow_prev_context = (user_turns > 0) and (not stateless)
-        # Keep summaries refreshed every turn for stable multi-turn continuity.
+        # Allow using/updating the rolling summary for this turn
+        # (disabled in stateless mode for stable multi-turn continuity).
         allow_summary = not stateless
 
         rewritten_q, focus_mem_docs, detected_intent = self._rewrite_query_if_needed(raw_q)
@@ -2358,8 +2376,8 @@ class Engine:
         if self.utility_worker is not None and int(
             getattr(settings, "enable_utility_background", 1)
         ) == 1:
-            # Persist lightweight context immediately so the next turn can use it
-            # even if the background worker has not processed this job yet.
+            # Persist lightweight context immediately so the next turn can use
+            # it even if the background worker has not processed this job yet.
             state = self.store.load(self.session_id)
             rolling_summary = state.get("rolling_summary", "") or ""
             if summary_should_update:

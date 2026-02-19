@@ -1,70 +1,88 @@
-# database_manager.py
+# conversation_memory.py
+import json
 import os
-from dataclasses import dataclass
-from typing import Dict, List, Optional
+import threading
+from typing import Any, Dict, Optional
 
-import config_full as config
+# ---------------------------------------------------------------------------
+# In-memory QA cache and pipeline cache, keyed by (user_key, cache_key).
+# These are process-local and intentionally not persisted to disk — they exist
+# only to avoid redundant LLM calls within a single server session.
+# ---------------------------------------------------------------------------
+
+_qa_cache: Dict[str, Dict[str, Any]] = {}
+_pipeline_cache: Dict[str, Any] = {}
+_lock = threading.Lock()
 
 
-@dataclass
-class DatabaseConfig:
-    mode: str
-    chroma_dir: str
-    collection: str
-    description: str
+# ---------------------------------------------------------------------------
+# QA answer cache
+# ---------------------------------------------------------------------------
+
+def get_cached_answer(user_key: str, cache_key: str) -> Optional[Dict[str, Any]]:
+    """Return a previously cached answer dict, or None if not found."""
+    with _lock:
+        user_store = _qa_cache.get(user_key)
+        if not isinstance(user_store, dict):
+            return None
+        return user_store.get(cache_key)
 
 
-class DatabaseManager:
-    def __init__(self) -> None:
-        self.configs: Dict[str, DatabaseConfig] = {}
-        self.active_config_name: str = "full"
-        self._load_defaults()
+def set_cached_answer(user_key: str, cache_key: str, payload: Dict[str, Any]) -> None:
+    """Store an answer payload under (user_key, cache_key)."""
+    if not user_key or not cache_key or not isinstance(payload, dict):
+        return
+    with _lock:
+        if user_key not in _qa_cache:
+            _qa_cache[user_key] = {}
+        _qa_cache[user_key][cache_key] = payload
 
-    def _load_defaults(self) -> None:
-        self.register_config(
-            "full",
-            DatabaseConfig(
-                mode="full",
-                chroma_dir=config.CHROMA_DIR_FULL,
-                collection=getattr(config, "CHROMA_COLLECTION_FULL", getattr(config, "CHROMA_COLLECTION", "papers_all")),
-                description="Full text papers with metadata",
-            ),
-        )
-        self.active_config_name = "full"
 
-    def register_config(self, name: str, cfg: DatabaseConfig) -> None:
-        self.configs[name] = cfg
+def clear_qa_cache(user_key: str) -> None:
+    """Remove all cached answers for a given user/session."""
+    with _lock:
+        _qa_cache.pop(user_key, None)
 
-    def resolve_mode(self, requested_mode: str) -> str:
-        available_modes = self.list_configs()
-        if not available_modes:
-            return ""
-        req = (requested_mode or "").strip()
-        if req in self.configs:
-            return req
-        req_l = req.lower()
-        by_lower = {k.lower(): k for k in self.configs.keys()}
-        if req_l in by_lower:
-            return by_lower[req_l]
-        return available_modes[0]
 
-    def switch_config(self, name: str) -> bool:
-        target = self.resolve_mode(name)
-        if target:
-            self.active_config_name = target
-            return True
-        return False
+# ---------------------------------------------------------------------------
+# Pipeline state cache (lightweight — stores retrieval/summary digest only)
+# ---------------------------------------------------------------------------
 
-    def get_active_config(self) -> Optional[DatabaseConfig]:
-        return self.configs.get(self.active_config_name)
+def get_pipeline_cache(user_key: str) -> Optional[Dict[str, Any]]:
+    """Return the last pipeline state snapshot for a user, or None."""
+    with _lock:
+        return _pipeline_cache.get(user_key)
 
-    def get_config(self, name: str) -> Optional[DatabaseConfig]:
-        return self.configs.get(name)
 
-    def list_configs(self) -> List[str]:
-        return list(self.configs.keys())
+def set_pipeline_cache(user_key: str, payload: Dict[str, Any]) -> None:
+    """Overwrite the pipeline state snapshot for a user."""
+    if not user_key:
+        return
+    with _lock:
+        _pipeline_cache[user_key] = payload if isinstance(payload, dict) else {}
 
-    def ensure_dirs_exist(self) -> None:
-        for cfg in self.configs.values():
-            if cfg and cfg.chroma_dir:
-                os.makedirs(cfg.chroma_dir, exist_ok=True)
+
+# ---------------------------------------------------------------------------
+# Hard reset — clears both caches and delegates to the engine manager to wipe
+# the vector memory store for the session.
+# ---------------------------------------------------------------------------
+
+def hard_reset_memory(user_key: str) -> None:
+    """
+    Full session reset:
+      1. Clears the in-memory QA cache for this user.
+      2. Clears the pipeline cache for this user.
+      3. Resets the persistent session state and Chroma memory collection via
+         the global EngineManager (session_store rows + memory embeddings).
+    """
+    clear_qa_cache(user_key)
+    with _lock:
+        _pipeline_cache.pop(user_key, None)
+
+    # Import here to avoid a circular import at module load time.
+    try:
+        from rag_engine import get_global_manager
+        mgr = get_global_manager()
+        mgr.reset_session(user_key)
+    except Exception:
+        pass

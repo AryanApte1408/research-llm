@@ -28,37 +28,27 @@ class RuntimeSettings:
     llm_model: str = _env("RAG_LLM_MODEL", "llama-3.2-3b")
     use_graph: bool = _env_bool("RAG_USE_GRAPH", True)
     stateless_default: bool = _env_bool("RAG_STATELESS_DEFAULT", False)
-    debug_rag: bool = _env_bool("RAG_DEBUG", True)
+
+    debug_rag: bool = _env_bool("RAG_DEBUG", False)
     force_gpu: bool = _env_bool("RAG_FORCE_GPU", True)
 
     # Generation
-    answer_max_new_tokens: int = _env_int("RAG_ANSWER_MAX_NEW_TOKENS", _env_int("RAG_MAX_NEW_TOKENS", 1024))
+    answer_max_new_tokens: int = _env_int(
+        "RAG_ANSWER_MAX_NEW_TOKENS",
+        _env_int("RAG_MAX_NEW_TOKENS", 1024),
+    )
     llm_timeout_s: int = _env_int("RAG_LLM_TIMEOUT_S", 300)
-    # --- Fix 9 (revised): Higher starting ceilings for _fit_prompt_to_budget.
-    # The budget loop (28 iterations) will shrink these to fit the actual LLM
-    # context window, but starting higher gives it more room to keep documents
-    # rather than beginning from an already-tight ceiling.  With 16 docs * 600
-    # chars the loop typically settles around 8-10 docs * 350-500 chars for a
-    # 4K-token model, which is a significant improvement over the old 4-6 docs.
-    # For models with 8K+ context this lets 14-16 docs through unchanged. ---
-    prompt_doc_text_limit: int = _env_int("RAG_PROMPT_DOC_TEXT_LIMIT", 600)
-    prompt_max_docs: int = _env_int("RAG_PROMPT_MAX_DOCS", 16)
+
+    prompt_doc_text_limit: int = _env_int("RAG_PROMPT_DOC_TEXT_LIMIT", 1400)
+    prompt_max_docs: int = _env_int("RAG_PROMPT_MAX_DOCS", 36)
 
     # Search
     search_k: int = _env_int("RAG_SEARCH_K", 60)
     search_fetch_k: int = _env_int("RAG_SEARCH_FETCH_K", 150)
-    # mmr_lambda: 0.0=pure diversity, 1.0=pure relevance.
-    # 0.6 gives a good balance — enough diversity to avoid duplicates
-    # while keeping most relevant docs in the result set.
     mmr_lambda: float = _env_float("RAG_MMR_LAMBDA", 0.6)
 
     # Budgets
     budget_memory: int = _env_int("RAG_BUDGET_MEMORY", 900)
-    # budget_papers is counted against formatted doc representations (title +
-    # researcher + authors + year + summary + snippet).  pack_docs also enforces
-    # a MIN_DOCS=8 floor so at least 8 docs always pass regardless of budget.
-    # Set high enough that 20-30 docs comfortably fit; _fit_prompt_to_budget will
-    # shrink to the actual LLM context window after retrieval.
     budget_papers: int = _env_int("RAG_BUDGET_PAPERS", 20000)
     trigger_tokens: int = _env_int("RAG_TRIGGER_TOKENS", 6000)
 
@@ -93,9 +83,10 @@ class RuntimeSettings:
     followup_query_max_words: int = _env_int("RAG_FOLLOWUP_QUERY_MAX_WORDS", 8)
     followup_k_mult: float = _env_float("RAG_FOLLOWUP_K_MULT", 2.0)
     followup_fetch_k_mult: float = _env_float("RAG_FOLLOWUP_FETCH_K_MULT", 2.0)
-    generic_query_terms: str = _env("RAG_GENERIC_QUERY_TERMS",
-        "about,again,also,anything,anyone,can,could,does,else,field,give,help,him,her,it,its,"
-        "know,me,more,need,other,others,please,tell,that,them,they,those,this,what,which,who,whom,why,work")
+    generic_query_terms: str = _env(
+        "RAG_GENERIC_QUERY_TERMS",
+        "about,again,anything,anyone,can,could,does,else,field,give,him,her,it,its,know,me,more,other,others,tell,that,them,they,those,this,what,which,who,whom,why,work",
+    )
     generic_token_min_len: int = _env_int("RAG_GENERIC_TOKEN_MIN_LEN", 3)
 
     # NER / Summary
@@ -132,21 +123,5 @@ class RuntimeSettings:
     session_turns_max_chars: int = _env_int("RAG_SESSION_TURNS_MAX_CHARS", 32000)
     session_turn_trim_target_chars: int = _env_int("RAG_SESSION_TURN_TRIM_TARGET_CHARS", 24000)
     summary_compress_threshold_chars: int = _env_int("RAG_SUMMARY_COMPRESS_THRESHOLD_CHARS", 1400)
-
-    _CACHE_BUSTING_FIELDS: frozenset = frozenset({
-        "generic_query_terms", "generic_token_min_len",
-        "followup_phrases", "followup_pronoun_regex",
-    })
-
-    def __setattr__(self, name: str, value: object) -> None:
-        old = getattr(self, name, _SENTINEL)
-        super().__setattr__(name, value)
-        if old is not _SENTINEL and old != value and name in self._CACHE_BUSTING_FIELDS:
-            try:
-                from rag_utils import bust_caches
-                bust_caches(name)
-            except Exception:
-                pass
-
 
 settings = RuntimeSettings()
